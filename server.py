@@ -81,11 +81,17 @@ def alinhar_e_recortar_folha(img):
 
 def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
     """
-    Examina o cartão de respostas usando posições percentuais exatas para 
-    as duas colunas da folha alinhada, garantindo precisão matemática na leitura.
+    Examina o cartão de respostas aplicando correção de iluminação para anular sombras 
+    e usa posições percentuais exatas para as duas colunas da folha alinhada.
     """
     gray = cv2.cvtColor(img_alinhada, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # 1. REMOÇÃO DE SOMBRAS E NORMALIZAÇÃO DE ILUMINAÇÃO
+    fundo = cv2.GaussianBlur(gray, (51, 51), 0)
+    normalizada = cv2.divide(gray, fundo, scale=255)
+    
+    # 2. SUAVIZAÇÃO E BINARIZAÇÃO ROBUSTA
+    blur = cv2.GaussianBlur(normalizada, (5, 5), 0)
     thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
     altura, largura = img_alinhada.shape[:2]
@@ -121,8 +127,8 @@ def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
                 marcatura_maxima = pixels_preenchidos
                 opcao_marcada = MAPA_LETRAS[alt_idx]
 
-        # Limiar de densidade de pixels pretos para considerar a bolha preenchida
-        area_minima = (np.pi * (r ** 2)) * 0.25
+        # Limiar de densidade de pixels pretos rigoroso para ignorar sombras residuais (35% da área)
+        area_minima = (np.pi * (r ** 2)) * 0.35
         if marcatura_maxima >= area_minima:
             respostas_detectadas[str(q)] = opcao_marcada
             if str(gabarito_dict.get(str(q))).strip().upper() == str(opcao_marcada).strip().upper():
