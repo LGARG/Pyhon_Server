@@ -19,69 +19,53 @@ class PayloadOMR(BaseModel):
     imagemBase64: str
 
 def alinhar_e_recortar_folha(img):
-    """
-    Localiza os 4 marcadores nos cantos com tolerância aprimorada 
-    para variações de ângulo e iluminação.
-    """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # Limiarização adaptativa ou OTSU otimizada para realçar marcas pretas
     thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Dilatação leve para fechar pequenas falhas nos cantos pretos
-    kernel = np.ones((3, 3), np.uint8)
-    thresh = cv2.dilate(thresh, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    h_img, w_img = thresh.shape
     
-    quadrados = []
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        
-        area = cv2.contourArea(c)
-        # Área mínima ajustada para capturar marcadores mesmo mais distantes
-        if area > 50: 
-            x, y, w, h = cv2.boundingRect(approx)
-            ar = w / float(h) if h > 0 else 0
-            
-            # Tolerância de proporção ampliada (0.6 a 1.4)
-            if 0.6 <= ar <= 1.4:
-                quadrados.append((x, y, w, h, c))
-
-    if len(quadrados) < 4:
-        # Tenta uma busca secundária mais ampla caso os 4 não tenham sido atingidos
-        raise ValueError(f"Foram encontrados apenas {len(quadrados)} marcadores dos 4 necessários. Ajuste o enquadramento.")
-
-    # Ordena os quadrados por tamanho e pega os 4 maiores (presumivelmente os cantos da folha)
-    quadrados = sorted(quadrados, key=lambda b: b[2] * b[3], reverse=True)[:4]
-
-    # Extrai os centros dos 4 marcadores
+    # Divide a imagem em 4 quadrantes para procurar o marcador preto em cada canto
+    quadrantes = [
+        ("TL", thresh[0:int(h_img*0.3), 0:int(w_img*0.3)]),         # Top-Left
+        ("TR", thresh[0:int(h_img*0.3), int(w_img*0.7):w_img]),     # Top-Right
+        ("BR", thresh[int(h_img*0.7):h_img, int(w_img*0.7):w_img]), # Bottom-Right
+        ("BL", thresh[int(h_img*0.7):h_img, 0:int(w_img*0.3)])      # Bottom-Left
+    ]
+    
     pontos = []
-    for q in quadrados:
-        M = cv2.moments(q[4])
+    for nome, quad in quadrantes:
+        contours, _ = cv2.findContours(quad, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            raise ValueError(f"Marcador não encontrado no quadrante {nome}. Verifique o enquadramento.")
+        
+        # Pega o maior contorno no quadrante (presumivelmente o marcador fiducial)
+        maior_c = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(maior_c) < 20:
+            raise ValueError(f"Marcador muito pequeno ou ausente no quadrante {nome}.")
+            
+        M = cv2.moments(maior_c)
         if M["m00"] != 0:
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
-            pontos.append([cx, cy])
         else:
-            # Fallback usando o centro do bounding box
-            x, y, w, h, _ = q
-            pontos.append([x + w // 2, y + h // 2])
+            x, y, w, h = cv2.boundingRect(maior_c)
+            cx, cy = x + w // 2, y + h // 2
+            
+        # Ajusta o offset baseado em qual quadrante estamos
+        if nome == "TR":
+            cx += int(w_img * 0.7)
+        elif nome == "BR":
+            cx += int(w_img * 0.7)
+            cy += int(h_img * 0.7)
+        elif nome == "BL":
+            cy += int(h_img * 0.7)
+            
+        pontos.append([float(cx), float(cy)])
 
     pts = np.array(pontos, dtype="float32")
-
-    # Ordena os pontos: [superior-esquerdo, superior-direito, inferior-direito, inferior-esquerdo]
-    s = pts.sum(axis=1)
-    rect = np.zeros((4, 2), dtype="float32")
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-
+    
+    # Ordem esperada: TL, TR, BR, BL
     largura, altura = 1000, 1414
     dst = np.array([
         [0, 0],
@@ -90,7 +74,7 @@ def alinhar_e_recortar_folha(img):
         [0, altura - 1]
     ], dtype="float32")
 
-    M_persp = cv2.getPerspectiveTransform(rect, dst)
+    M_persp = cv2.getPerspectiveTransform(pts, dst)
     warp = cv2.warpPerspective(img, M_persp, (largura, altura))
 
     return warp
