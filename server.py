@@ -81,88 +81,54 @@ def alinhar_e_recortar_folha(img):
 
 def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
     """
-    Examina o cartão de respostas detetando dinamicamente os contornos das bolhas 
-    na folha alinhada, garantindo robustez a pequenas variações de impressão.
+    Examina o cartão de respostas usando posições percentuais exatas para 
+    as duas colunas da folha alinhada, garantindo precisão matemática na leitura.
     """
     gray = cv2.cvtColor(img_alinhada, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Encontra todos os contornos na folha alinhada
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    candidatos_bolhas = []
-    
-    # Filtra contornos que correspondem ao tamanho esperado das alternativas (quadrados/bolhas)
-    for c in contours:
-        area = cv2.contourArea(c)
-        # Ajuste estes valores de área conforme o tamanho real da alternativa no warp de 1000x1414
-        if 80 < area < 600: 
-            x, y, w, h = cv2.boundingRect(c)
-            proporcao = w / float(h) if h > 0 else 0
-            
-            # Garante que são formas próximas de quadradas ou circulares
-            if 0.6 <= proporcao <= 1.4:
-                candidatos_bolhas.append((x, y, w, h, c))
-
-    # Se não encontrar o número esperado de alternativas (10 questões * 5 opções = 50 alternativas)
-    # ou se precisar de uma abordagem híbrida por linhas, ordenamos os candidatos encontrados:
-    # Ordena primariamente por Y (agrupando por linhas/altura) e secundariamente por X (esquerda para direita)
-    
-    # Uma estratégia robusta para 10 questões divididas em duas colunas:
-    # Vamos ordenar todos os candidatos por coordenada Y para identificar as linhas de questões
-    candidatos_bolhas = sorted(candidatos_bolhas, key=lambda b: b[1])
-
-    respostas_detectadas = {}
+    altura, largura = img_alinhada.shape[:2]
     acertos = 0
-    
-    # Agrupa por proximidade vertical (linhas aproximadas)
-    linhas = []
-    linha_atual = []
-    y_ultimo = -1
-    
-    for b in candidatos_bolhas:
-        x, y, w, h, c = b
-        if y_ultimo == -1 or abs(y - y_ultimo) < 15:  # Tolerância vertical para a mesma linha
-            linha_atual.append(b)
-        else:
-            if linha_atual:
-                # Ordena a linha da esquerda para a direita (por X)
-                linhas.append(sorted(linha_atual, key=lambda item: item[0]))
-            linha_atual = [b]
-        y_ultimo = y
-        
-    if linha_atual:
-        linhas.append(sorted(linha_atual, key=lambda item: item[0]))
+    respostas_detectadas = {}
 
-    # Filtra apenas linhas que contêm aglomerados de alternativas válidas 
-    # (por exemplo, linhas com 5 alternativas)
-    questoes_validas = [l for l in linhas if len(l) >= 5]
+    # Como o PDF divide as 10 questões em duas colunas verticais:
+    # Questões 1 a 5 na coluna esquerda, 6 a 10 na coluna direita.
+    for q in range(1, total_questoes + 1):
+        # Determina se pertence à coluna esquerda (0) ou direita (1)
+        # Assumindo 5 questões por coluna
+        coluna = 0 if q <= 5 else 1
+        linha_index = (q - 1) % 5
 
-    # Processa cada questão detetada dinamicamente
-    for idx, linha in enumerate(questoes_validas[:total_questoes]):
-        q_num = str(idx + 1)
+        # Coordenadas base proporcionais (ajustadas ao warp de 1000x1414)
+        x_inicio_base = 0.18 if coluna == 0 else 0.58
+        y_inicio_base = 0.34 + (linha_index * 0.09)
+
         marcatura_maxima = 0
         opcao_marcada = None
 
-        for alt_idx, (x, y, w, h, c) in enumerate(linha[:5]):  # 5 alternativas: A, B, C, D, E
-            # Cria uma máscara para calcular a densidade de pixels pretos dentro da caixa detetada
+        for alt_idx in range(5):  # 0: A, 1: B, 2: C, 3: D, 4: E
+            x_bolha = int((x_inicio_base + (alt_idx * 0.055)) * largura)
+            y_bolha = int(y_inicio_base * altura)
+            r = int(0.015 * largura)  # Raio proporcional da bolha
+
             mascara = np.zeros(thresh.shape, dtype="uint8")
-            cv2.rectangle(mascara, (x, y), (x + w, y + h), 255, -1)
+            cv2.circle(mascara, (x_bolha, y_bolha), r, 255, -1)
             
             pixels_preenchidos = cv2.countNonZero(cv2.bitwise_and(thresh, thresh, mask=mascara))
-            
+
             if pixels_preenchidos > marcatura_maxima:
                 marcatura_maxima = pixels_preenchidos
                 opcao_marcada = MAPA_LETRAS[alt_idx]
 
-        # Define um limiar de preenchimento para considerar a alternativa marcada
-        if marcatura_maxima > 100:  # Ajustável conforme o preenchimento a caneta
-            respostas_detectadas[q_num] = opcao_marcada
-            if gabarito_dict.get(q_num) == opcao_marcada:
+        # Limiar de densidade de pixels pretos para considerar a bolha preenchida
+        area_minima = (np.pi * (r ** 2)) * 0.25
+        if marcatura_maxima >= area_minima:
+            respostas_detectadas[str(q)] = opcao_marcada
+            if str(gabarito_dict.get(str(q))).strip().upper() == str(opcao_marcada).strip().upper():
                 acertos += 1
         else:
-            respostas_detectadas[q_num] = "N/A"
+            respostas_detectadas[str(q)] = "N/A"
 
     return acertos, respostas_detectadas
 
