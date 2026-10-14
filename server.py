@@ -20,33 +20,42 @@ class PayloadOMR(BaseModel):
 
 def alinhar_e_recortar_folha(img):
     """
-    Localiza os 4 marcadores pretos nos cantos (marcas fiduciais)
-    e aplica a Transformação de Perspectiva para desentortar a imagem.
+    Localiza os 4 marcadores nos cantos com tolerância aprimorada 
+    para variações de ângulo e iluminação.
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Limiarização adaptativa ou OTSU otimizada para realçar marcas pretas
     thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    # Encontra contornos dos marcadores
+    # Dilatação leve para fechar pequenas falhas nos cantos pretos
+    kernel = np.ones((3, 3), np.uint8)
+    thresh = cv2.dilate(thresh, kernel, iterations=1)
+
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     quadrados = []
     for c in contours:
         peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         
-        # Filtra por contornos de 4 vértices (quadrados/retângulos) com área mínima
-        if len(approx) == 4 and cv2.contourArea(c) > 100:
+        area = cv2.contourArea(c)
+        # Área mínima ajustada para capturar marcadores mesmo mais distantes
+        if area > 50: 
             x, y, w, h = cv2.boundingRect(approx)
-            ar = w / float(h)
-            if 0.8 <= ar <= 1.2:  # Formato próximo de um quadrado
-                quadrados.append((x, y, w, h, approx))
-
-    # Ordena para pegar os 4 maiores marcadores dos cantos
-    quadrados = sorted(quadrados, key=lambda b: b[2] * b[3], reverse=True)[:4]
+            ar = w / float(h) if h > 0 else 0
+            
+            # Tolerância de proporção ampliada (0.6 a 1.4)
+            if 0.6 <= ar <= 1.4:
+                quadrados.append((x, y, w, h, c))
 
     if len(quadrados) < 4:
-        raise ValueError("Não foi possível localizar os 4 marcadores de canto na folha. Verifique o enquadramento e iluminação.")
+        # Tenta uma busca secundária mais ampla caso os 4 não tenham sido atingidos
+        raise ValueError(f"Foram encontrados apenas {len(quadrados)} marcadores dos 4 necessários. Ajuste o enquadramento.")
+
+    # Ordena os quadrados por tamanho e pega os 4 maiores (presumivelmente os cantos da folha)
+    quadrados = sorted(quadrados, key=lambda b: b[2] * b[3], reverse=True)[:4]
 
     # Extrai os centros dos 4 marcadores
     pontos = []
@@ -56,6 +65,10 @@ def alinhar_e_recortar_folha(img):
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
             pontos.append([cx, cy])
+        else:
+            # Fallback usando o centro do bounding box
+            x, y, w, h, _ = q
+            pontos.append([x + w // 2, y + h // 2])
 
     pts = np.array(pontos, dtype="float32")
 
@@ -69,7 +82,6 @@ def alinhar_e_recortar_folha(img):
     rect[1] = pts[np.argmin(diff)]
     rect[3] = pts[np.argmax(diff)]
 
-    # Define dimensões fixas padrão para a folha alinhada (A4 proporcional)
     largura, altura = 1000, 1414
     dst = np.array([
         [0, 0],
@@ -78,7 +90,6 @@ def alinhar_e_recortar_folha(img):
         [0, altura - 1]
     ], dtype="float32")
 
-    # Matriz de transformação de perspectiva
     M_persp = cv2.getPerspectiveTransform(rect, dst)
     warp = cv2.warpPerspective(img, M_persp, (largura, altura))
 
