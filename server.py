@@ -81,61 +81,66 @@ def alinhar_e_recortar_folha(img):
 
 def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
     """
-    Examina as regiões das bolhas na folha alinhada e conta a densidade de pixels pretos.
+    Examina as regiões das bolhas com o mapeamento exato das 10 questões 
+    conforme o layout oficial do PDF.
     """
     gray = cv2.cvtColor(img_alinhada, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    metade = (total_questoes + 1) // 2
+    largura, altura = img_alinhada.shape[1], img_alinhada.shape[0]
     acertos = 0
     respostas_detectadas = {}
 
-    # Regiões de interesse (ROI) aproximadas em percentuais da folha alinhada
-    # Ajuste fino das coordenadas baseadas no layout do PDF gerado no Flutter
-    largura, altura = img_alinhada.shape[1], img_alinhada.shape[0]
+    # Mapeamento exato da posição (coluna, linha) para cada questão de 1 a 10
+    # Coluna 0 = Esquerda, Coluna 1 = Direita
+    # linha_index = índice vertical de 0 a 4
+    posicoes_questoes = {
+        1: (0, 0),  # Questão 1
+        2: (0, 1),  # Questão 2
+        3: (0, 2),  # Questão 3
+        4: (0, 3),  # Questão 4
+        5: (0, 4),  # Questão 5
+        6: (1, 0),  # Questão 6
+        7: (1, 1),  # Questão 7
+        8: (1, 2),  # Questão 8
+        9: (1, 3),  # Questão 9
+        10: (1, 4)  # Questão 10
+    }
 
     for q in range(1, total_questoes + 1):
-        # Define se a questão está na coluna esquerda ou direita
-        if q <= metade:
-            coluna = 0
-            linha_index = q - 1
-        else:
-            coluna = 1
-            linha_index = q - metade - 1
+        if q not in posicoes_questoes:
+            continue
+            
+        coluna, linha_index = posicoes_questoes[q]
 
-        # CÁLCULO DE COORDENADAS DINÂMICAS DAS BOLHAS
-        # Coluna 0 (Esquerda): X inicia ~18% da largura | Coluna 1 (Direita): X inicia ~65%
-        x_inicio_base = 0.18 if coluna == 0 else 0.65
-        y_inicio_base = 0.28 + (linha_index * (0.60 / metade))  # Distribui verticalmente
+        # Coordenadas base adaptadas para as duas colunas de bolhas
+        x_inicio_base = 0.22 if coluna == 0 else 0.62
+        y_inicio_base = 0.32 + (linha_index * 0.085)
 
         marcatura_maxima = 0
         opcao_marcada = None
 
         for idx_alt in range(5):  # 0: A, 1: B, 2: C, 3: D, 4: E
-            # Deslocamento horizontal por alternativa
-            x_bolha = int((x_inicio_base + (idx_alt * 0.055)) * largura)
+            x_bolha = int((x_inicio_base + (idx_alt * 0.045)) * largura)
             y_bolha = int(y_inicio_base * altura)
-            r = int(0.012 * largura)  # Raio da região da bolha
+            r = int(0.011 * largura)
 
-            # Máscara circular para contar pixels marcados a caneta
             mascara = np.zeros(thresh.shape, dtype="uint8")
             cv2.circle(mascara, (x_bolha, y_bolha), r, 255, -1)
             
-            # Conta pixels pretos dentro do círculo
             total_pixels_preenchidos = cv2.countNonZero(cv2.bitwise_and(thresh, thresh, mask=mascara))
 
             if total_pixels_preenchidos > marcatura_maxima:
                 marcatura_maxima = total_pixels_preenchidos
                 opcao_marcada = MAPA_LETRAS[idx_alt]
 
-        # Limiar mínimo de pixels para considerar como marcacao válida (evita ruídos)
-        area_minima_preenchimento = (np.pi * (r ** 2)) * 0.35
+        area_minima_preenchimento = (np.pi * (r ** 2)) * 0.30
         if marcatura_maxima >= area_minima_preenchimento:
             respostas_detectadas[str(q)] = opcao_marcada
             if gabarito_dict.get(str(q)) == opcao_marcada:
                 acertos += 1
         else:
-            respostas_detectadas[str(q)] = "N/A"  # Questão em branco ou marcação fraca
+            respostas_detectadas[str(q)] = "N/A"
 
     return acertos, respostas_detectadas
 
