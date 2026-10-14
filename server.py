@@ -81,42 +81,36 @@ def alinhar_e_recortar_folha(img):
 
 def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
     """
-    Examina o cartão aplicando correção de iluminação para anular sombras 
-    e usa limiarização adaptativa para detetar apenas a tinta da caneta.
+    Examina o cartão de respostas usando posições percentuais exatas para 
+    as duas colunas da folha alinhada, garantindo precisão matemática na leitura.
     """
     gray = cv2.cvtColor(img_alinhada, cv2.COLOR_BGR2GRAY)
-
-    # 1. REMOÇÃO DE SOMBRAS (Correção de Iluminação de Fundo)
-    # Cria uma versão desfocada da imagem para estimar o mapa de sombras/iluminação de fundo
-    fundo = cv2.GaussianBlur(gray, (51, 51), 0)
-    
-    # Subtrai o fundo da imagem original e normaliza o contraste
-    normalizada = cv2.divide(gray, fundo, scale=255)
-    
-    # Suaviza a imagem normalizada para eliminar ruídos de impressão
-    blur = cv2.GaussianBlur(normalizada, (5, 5), 0)
-    
-    # 2. BINARIZAÇÃO ROBUSTA (Otsu sobre imagem livre de sombras)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
     altura, largura = img_alinhada.shape[:2]
     acertos = 0
     respostas_detectadas = {}
 
+    # Como o PDF divide as 10 questões em duas colunas verticais:
+    # Questões 1 a 5 na coluna esquerda, 6 a 10 na coluna direita.
     for q in range(1, total_questoes + 1):
+        # Determina se pertence à coluna esquerda (0) ou direita (1)
+        # Assumindo 5 questões por coluna
         coluna = 0 if q <= 5 else 1
         linha_index = (q - 1) % 5
 
+        # Coordenadas base proporcionais (ajustadas ao warp de 1000x1414)
         x_inicio_base = 0.18 if coluna == 0 else 0.58
         y_inicio_base = 0.34 + (linha_index * 0.09)
 
         marcatura_maxima = 0
         opcao_marcada = None
 
-        for alt_idx in range(5):  # A, B, C, D, E
+        for alt_idx in range(5):  # 0: A, 1: B, 2: C, 3: D, 4: E
             x_bolha = int((x_inicio_base + (alt_idx * 0.055)) * largura)
             y_bolha = int(y_inicio_base * altura)
-            r = int(0.015 * largura)
+            r = int(0.015 * largura)  # Raio proporcional da bolha
 
             mascara = np.zeros(thresh.shape, dtype="uint8")
             cv2.circle(mascara, (x_bolha, y_bolha), r, 255, -1)
@@ -127,10 +121,8 @@ def avaliar_questoes_omr(img_alinhada, total_questoes, gabarito_dict):
                 marcatura_maxima = pixels_preenchidos
                 opcao_marcada = MAPA_LETRAS[alt_idx]
 
-        # Limiar de preenchimento rigoroso para ignorar sombras residuais
-        area_bolha = np.pi * (r ** 2)
-        area_minima = area_bolha * 0.35  # Exige pelo menos 35% da bolha preenchida com tinta
-        
+        # Limiar de densidade de pixels pretos para considerar a bolha preenchida
+        area_minima = (np.pi * (r ** 2)) * 0.25
         if marcatura_maxima >= area_minima:
             respostas_detectadas[str(q)] = opcao_marcada
             if str(gabarito_dict.get(str(q))).strip().upper() == str(opcao_marcada).strip().upper():
